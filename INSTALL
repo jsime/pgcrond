@@ -1,0 +1,32 @@
+INSTALLING PGCROND
+------------------------
+As root from the same directory as this INSTALL file:
+    ./install.sh
+
+NOTES
+------------------------
+To install pgcrond on your system, run the provided install.sh script.
+This will copy the pgcrond program to /usr/bin/pgcrond, create the
+man page, create the /etc/pgcrond directory (and its child(ren)) as
+well as create an empty /etc/pgcrontab jobs file. If you already have
+an /etc/pgcrontab (from a previous version of pgcrond) it will not be
+overwritten, though the sample pgcrontab from this version will be
+copied to /etc/pgcrontab.dist (overwriting that file if it already
+exists).
+
+Once installed, you can start the daemon by running (as root):
+    /usr/bin/pgcrond start
+
+Because pgcrond is controlled using the same arguments as many init
+scripts for more common versions of Linux and similar systems, you may
+be able to add pgcrond to your startup and shutdown run levels by
+doing something as simple as symlinking directly to the
+/usr/bin/pgcrond file from the appropriate init directories on your
+system.
+
+COPYRIGHT
+------------------------
+Copyright 2007 by Jon Sime.
+
+This program is free software; you may redistribute it and/or modify it
+under the same terms as Perl itself.

@@ -1,0 +1,823 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+pgcrond - a PostgreSQL job scheduler daemon
+
+=head1 SYNOPSIS
+
+pgcrond (start|stop|status|...)
+
+=head1 DESCRIPTION
+
+As a job scheduler, pgcrond is very similar to programs such as cron, but
+simplifies the process of supplying credentials (and for certain types of
+jobs, establishing connections) for database access.  It should ideally
+be started by /etc/rc, or your system's equivalent init system.  As the
+arguments to pgcrond are identical to those of some of the more common
+init systems (particularly for various distributions of Linux), you may
+be able to simply link directly to the pgcrond executable from your init
+system's configuration.
+
+Once started, pgcrond daemonizes itself and returns immediately (no need
+to background the process with &).  It will wake up each minute, read
+its pgcrontab file and run any jobs whose timespec matches the current
+time.
+
+Unlike other job schedulers, which are designed to invoke only external
+commands, pgcrond adds the ability to specify a job as a direct SQL
+statement to be run against the specified database server, as a session
+file which can contain any number of valid statements to be run by the
+psql command line tool, as a Perl script which is automatically given a
+connection to the database, or as an external command.
+
+All job types are supplied their credentials for connecting to the
+database in the same way, making it easier to keep those details in one
+place, instead of scattered about in random scripts all over your system.
+
+Jobs are defined in a manner very similar to other cron programs, but
+because of the additional information required for database connections
+all pgcrond jobs are defined in their own file B</etc/pgcrontab>.
+
+=head2 Defining Jobs
+
+A full job definition is required to contain the following sets of
+details: a I<timespec>, appropriate and valid DSN values (server
+address, port, database name and username), a job type and a job
+command.  Optionally, a list of schemas may be provided as well.  These
+values can be provided explicitly for every job, or defaults may be
+established and only overridden for jobs that differ.
+
+All fields in the pgcrontab should be separated by an arbitrary amount
+of spaces or tabs, and each job definition must be contained to a
+single line (line-continuation escapes are not supported).
+
+=head3 Time specification fields
+
+The timespec covers the first five fields of the job definition:
+minute, hour, day of month, month and day of week (in that order).  For
+details on how wildcards, stepping values, etc. may be used in these
+fields, refer to B<crontab(5)>.
+
+=head3 Database Source Name fields
+
+The following four fields are used to specify the DSN, in the following
+order: server address, server port, database name and user name.  These
+fields may inherit the global default values you establish through
+setting various PG* variables in the pgcrontab by setting the value to
+a literal dash "-" character.
+
+=head3 Schema field
+
+This field is required to be present in the job definition, though an
+explicit value is not required.  A comma-separated list of schema
+names may be provided to override the server connection defaults.  As
+a shortcut, if you need to specify non-default schema names in addition
+to the "public" schema, you may omit the word I<public> in the list by
+leaving a trailing comma.  If you wish to use the connection default
+values for your connection's I<search_path>, use a single literal dash
+character.
+
+=head3 Job type field
+
+This field determines which type of job to run, with the following
+possible values:
+
+=over
+
+=item * direct
+
+Indicates the job to be run is a single SQL statement, directly
+executed against the database server by pgcrond without needing to
+invoke any external commands or processes.  You B<cannot> issue
+more than one SQL statement in this manner (for that, see the next
+job type I<psql>).
+
+If the statement was successful, no output or notifications are
+generated.  If there was an error running the statement, it is
+automatically rolled back by pgcrond and the text of the error message
+will be delivered to the address specified by the MAILTO variable.
+
+=item * psql
+
+This job type allows you to specify a text file containing any number
+of sequentially-executed SQL (and psql) statements.  A transaction is
+not started automatically for you by pgcrond for these jobs, as there
+may be cases where you want (or need) to run some commands outside of
+a transaction.  For this reason, it is very highly recommended that
+you issue a BEGIN and finish up with a COMMIT in your psql file unless
+there is a strong reason not to do so.
+
+Because the contents of your psql file are run through the actual
+psql command line utility, any commands valid within the context of
+that program are valid in your psql file.  This includes commands
+such as B<\d>, B<\set>, B<\timing> and so on.  For full details on
+the non-SQL commands supported by psql, refer to B<psql(1)>.
+
+Please note that if you have the PostgreSQL binaries installed outside
+root's default PATH, you must set the PSQL variable in your pgcrontab
+to point to the full path of the psql executable for psql jobs to
+run properly.
+
+=item * perl
+
+A I<perl> job allows you to specify a file containing Perl code to be
+loaded and executed.  Your Perl code will be provided with an already
+established connection to the database server, through a C<SQL::Wrapper>
+database object.  As with psql jobs, no transaction will be created
+for you -- you will need to start and stop your own transactions as
+necessary.
+
+Your Perl code needs to adhere to only a couple simple rules for it to
+work properly with pgcrond.  First, it must I<require> cleanly with
+both the I<strict> and I<warnings> pragmas enabled.  It also must
+provide at least one subroutine, named I<run> in the I<main::> namespace.
+
+When pgcrond runs your Perl code, it will connect to the database,
+require your code into the job process and then immediately call the
+I<run> subroutine you provide with four arguments:
+
+=over
+
+=item $vars (hashref) - all environment variables applicable to the job
+
+=item $dsn (hashref) - the individual fields composing the DSN
+
+=item $action (hashref) - the individual fields of the job definition
+
+=item $db (SQL::Wrapper object) - an active connection to the database
+
+=back
+
+It is permissible to use BEGIN blocks in your Perl code if necessary,
+though END blocks are strongly discouraged.  Note that the BEGIN block
+will be executed after connecting to the database (and will have no way
+to access that connection).
+
+If you wish your Perl jobs to provide any notifications to the address
+specified in MAILTO, return all such data in a single scalar value.
+Anything returned by the I<run> subroutine will be sent out.
+
+=item * sh
+
+The final job type is the simplest, used for executing external commands
+through a shell call.  You can specify any command here in the same
+manner as a standard cron job.  The only real difference in setting up
+a sh job in pgcrond is that it will create the applicable PG* environment
+variables, which can be used by well-behaved tools to make their own
+connections to the database (examples would be programs such as
+B<vacuumdb(1)>).
+
+=back
+
+=head2 Variables in pgcrontab
+
+Within your pgcrontab file, there are a number of useful variables which
+may be set.  All variables are set by entering them on a single line in
+the format of I<NAME>=I<value>.  Whitespace surrounding the equals sign
+is acceptable.  If the value needs to begin or end with whitespace
+characters, you must enclose the entire value for the variable in double
+quotes (which will not be present once the variables have been parsed
+from the pgcrontab file).
+
+The first set of variables which can be set are entirely optional, but
+can be used to establish defaults for the DSN fields.  This allows you
+to specify highly repetitive DSN values in each job as a single dash
+character, instead of writing out the entire value each time.  These
+variables are: PGHOST, PGPORT, PGDATABASE and PGUSER.  Note that these
+are the same variable names one would set in their environment to be
+used by standard PostgreSQL utilities.  Note also that PGPASSWORD was
+not in that list; its use in the pgcrontab is forbidden (to encourage
+keeping sensitive passwords out of the job definitions).
+
+There are two variables that may also be set to control notifications
+sent by pgcrond whenever a job produces any output. These are MAILTO,
+which is used to set the address to which the notification emails will
+be delivered, and DSN_IN_MAIL.  The latter is by default turned on and
+unless turned off (by setting the value to I<0>, I<off> or I<no>) will
+cause pgcrond to include the basic DSN information (sans password) in
+all mail notifications sent out.  This can be used if you have multiple
+jobs that run the same command against different databases or servers,
+and when error messages or other output produced by those jobs may not
+be enough to distinguish which exact job triggered the notification.
+
+The final variable which may be set is PSQL.  If the B<psql> binary is
+not in the default PATH of the root user, this variable must contain
+the full path to that executable (e.g. I</usr/local/pgsql/bin/psql>),
+otherwise all of your psql jobs will fail, as pgcrond will not be able
+to locate the psql program to run them.
+
+=head2 Setting passwords for pgcrond jobs
+
+To prevent having sensitive database account passwords littered all
+over your filesystem in various scripts, or to have them clearly listed
+right alongside all your jobs in the global /etc/pgcrontab file, pgcrond
+obtains all necessary passwords from your I<pgpass> file.
+
+This file has a very simple format, and is a standard feature of the
+PostgreSQL suite.  All well-behaved first and third party utilities for
+PostgreSQL know and understand this file, and so does pgcrond (whether
+you consider pgcrond well-behaved or not).
+
+The file consists of any number of lines, each line containing a
+single DSN+password combination in the form of:
+
+    host:port:database:user:password
+
+Where any of the non-password fields may be an asterisk, acting as the
+wildcard that will match anything.  When consulting this file to find
+an appropriate password, the standard procedure is to look at each
+line sequentially until a match is found against all four non-password
+fields, and pgcrond honors that procedure.  As soon as a match against
+all four fields is found, all lines beyond that are ignored, so the
+order of the lines in this file can be significant.
+
+The location of this file, by default, is at I<~user/.pgpass> for nearly
+all UN*X-like systems, which in the case of pgcrond should generally be
+I</root/.pgpass>.  Because of the obviously sensitive nature of the
+file's contents, permissions of 0600 are strongly recommended.
+
+=head1 FILES
+
+=over
+
+=item /usr/bin/pgcrond
+
+=item /etc/pgcrontab
+
+=item /var/run/pgcrond.pid
+
+=item /root/.pgpass
+
+=back
+
+=head1 BUGS and/or TODOs
+
+Schemas specified in the job definition are currently not passed through
+for psql jobs.
+
+While most of the modules and libraries used by pgcrond should be
+threadsafe, at least one is known not to be (L<DateTime::Cron::Simple>)
+as of this writing.  The use of threads, therefor, in Perl jobs is
+unfortunately not possible at this time and will trigger runtime errors.
+
+Running pgcrond as an unprivileged user (or at least less-privileged than
+root) is currently not supported, though it is planned to allow for this
+in a future release.
+
+=head1 SEE ALSO
+
+L<SQL::Wrapper>
+
+=head1 AUTHOR
+
+Jon Sime E<lt>jonsime@gmail.comE<gt>
+
+=head1 COPYRIGHT AND LICENSE
+
+Copyright 2007 by Jon Sime <jonsime@gmail.com>.
+
+This program is free software; you may redistribute it and/or modify
+it under the same terms as Perl itself.
+
+=cut
+
+use strict;
+use warnings;
+
+our $VERSION = '0.9.1';
+
+use DateTime::Cron::Simple;
+use File::HomeDir;
+use MIME::Lite;
+use POSIX qw( setsid );
+use Proc::ProcessTable;
+use SQL::Wrapper;
+
+use constant PIDFILE => '/var/run/pgcrond.pid';
+use constant PSTITLE => 'pgcrond';
+use constant DEF_SCRIPTHOME => '/etc/pgcrond/scripts';
+use constant PSQL_BINARY => '/usr/bin/psql';
+
+# set mail delivery to use SMTP to times (TODO: make this generic)
+MIME::Lite->send('smtp','localhost');
+
+if (!defined $ARGV[0] || scalar(@ARGV) != 1 || $ARGV[0] =~ /^-{0,2}help$/oi) {
+	print <<EOU;
+pgcrond v$VERSION
+  Copyright 2007 by Jon Sime.
+  This program is free software; you may redistribute it and/or modify
+  it under the same terms as Perl itself.
+
+For full documentation on this program and its related files, refer
+to the man page.
+
+Invocation: pgcrond <command>
+
+Commands:
+
+    start      Starts the pgcrond daemon if it is not currently
+               running.
+
+    stop       Stops the currently running pgcrond daemon.
+
+    restart    Performs a full restart of the currently running
+               pgcrond daemon (same as running "pgcrond stop"
+               followed by "pgcrond start").
+
+    status     Checks for an already-running pgcrond daemon and
+               reports its state and PID if found.
+
+    help       Displays this message and exits.
+
+    version    Displays the pgcrond version number and exits.
+
+EOU
+
+	exit 0;
+}
+
+$ARGV[0] = lc($ARGV[0]);
+$ARGV[0] =~ s/^\-+//og;
+
+if ($ARGV[0] eq 'status') {
+	exit daemon_print_status();
+}
+
+if ($ARGV[0] eq 'version') {
+	exit print "pgcrond $VERSION\n";
+}
+
+if ($ARGV[0] eq 'stop' || $ARGV[0] eq 'restart') {
+	my $r = daemon_stop();
+	exit $r if $ARGV[0] eq 'stop';
+	exit $r if $ARGV[0] eq 'restart' && $r != 0;
+}
+
+if ($ARGV[0] eq 'start' || $ARGV[0] eq 'restart') {
+	exit daemon_start();
+}
+
+
+sub check_pgcrontab {
+	my %vars = ();
+	my @entries = ();
+
+	open(FH, '/etc/pgcrontab') or return 1;
+
+	my $line_num = 0;
+
+	PGCRONTAB_LINE:
+	while (my $line = <FH>) {
+		# TODO: 2.0 feature?
+		# add some coolness to allow the config to override previously defined
+		# variables in a location-aware way. IOW, VARX is defined at the top and
+		# applies to all jobs below it, until VARX is redefined to something else
+		# at which the new value applies to jobs defined after the new version.
+
+		chomp($line);
+		$line_num++;
+		# skip comment-only and blank lines
+		next PGCRONTAB_LINE if $line =~ /^\s*(#.*)?$/o;
+
+		# strip any in-line comment
+		$line =~ s/#.*$//o;
+
+		# see if the line is a variable assignment, and if so, store it
+		if ($line =~ /^(\w+)\s*=(.*)$/o) {
+			my ($name, $val) = ($1, $2);
+			$val =~ s/(^\s+|\s+$)//ogs; # remove trailing/leading whitespace
+			$val =~ s/(^"|"$)//ogs; # remove double-quoting if present
+			$vars{$name} = $val;
+			next PGCRONTAB_LINE;
+		}
+
+		# theoretically, if we hit this point, it should be a runspec line
+		my @runspec = split(/\s+/, $line);
+
+		# skip any runspec line without enough columns (at some point this can
+		# be changed to log out a warning with the line number)
+		next PGCRONTAB_LINE unless scalar(@runspec) >= 12;
+
+		my $timespec = join(' ', @runspec[0..4]);
+		my $cmdspec = join(' ', @runspec[11..$#runspec]);
+
+		next unless DateTime::Cron::Simple->new($timespec)->validate_time;
+
+		# set aside the data for any action that should be kicked off in this run
+		push(@entries, {
+			timespec	=> $timespec,
+			server		=> $runspec[5],
+			port		=> $runspec[6],
+			database	=> $runspec[7],
+			user		=> $runspec[8],
+			schema		=> $runspec[9],
+			type		=> $runspec[10],
+			command		=> $cmdspec,
+		});
+	}
+
+	close(FH);
+
+	# must get passwords from .pgpass files, not through environment
+	delete $vars{'PGPASSWORD'} if exists $vars{'PGPASSWORD'};
+
+	# make sure the script home is set properly
+	if (defined $vars{'SCRIPTHOME'}) {
+		$vars{'SCRIPTHOME'} .= '/' unless substr($vars{'SCRIPTHOME'}, -1, 1) eq '/';
+	} else {
+		$vars{'SCRIPTHOME'} = substr(DEF_SCRIPTHOME, -1, 1) eq '/'
+			? DEF_SCRIPTHOME : DEF_SCRIPTHOME . '/';
+	}
+
+	$vars{'MAILTO'} = 'root' unless defined $vars{'MAILTO'} && length($vars{'MAILTO'}) > 0;
+
+	$vars{'PSQL'} = PSQL_BINARY unless defined $vars{'PSQL'} && length($vars{'PSQL'}) > 0;
+
+	foreach (@entries) {
+		_handle_action(\%vars, $_);
+	}
+
+	return 0;
+}
+
+sub daemon_print_status {
+	my ($pid);
+
+	if ($pid = _get_daemon_pid()) {
+		print STDERR "Started: $pid\n";
+	} else {
+		print STDERR "Stopped\n";
+	}
+
+	return 0;
+}
+
+sub daemon_start {
+	my ($pid);
+
+	if ($pid = _get_daemon_pid()) {
+		print STDERR "pgcrond already running ($pid)!\n";
+		return 1;
+	}
+
+	chdir('/') or die "Couldn't chdir to /: $!";
+	open(STDIN, '/dev/null') or die "Couldn't redirect stdin from /dev/null: $!";
+	open(STDOUT, '>/dev/null') or die "Couldn't redirect stdout to /dev/null: $!";
+	defined ($pid = fork) or die "Couldn't fork: $!";
+	exit if $pid;
+	setsid or die "Couldn't start a new session: $!";
+	open(STDERR, '>&STDOUT') or die "Couldn't redirect stderr to stdout: $!";
+
+	$SIG{CHLD} = 'IGNORE'; # someone call social services!
+
+	$pid = $$;
+
+	$0 = PSTITLE;
+
+	open(FH, '>' . PIDFILE) or die "Couldn't open PID file: $!";
+	print FH $pid;
+	close(FH);
+
+	my $last = '0' x 12;
+
+	while (1) {
+		my $now = sprintf('%4d%02d%02d%02d%02d',
+			(localtime)[5] + 1900, (localtime)[4] + 1, (localtime)[3,2,1]);
+
+		if ($now gt $last) {
+			$last = $now;
+			check_pgcrontab();
+		}
+
+		sleep(1);
+	}
+
+	return 0;
+}
+
+sub daemon_stop {
+	my ($pid);
+
+	if ($pid = _get_daemon_pid()) {
+		my $check_count = 0;
+
+		print STDERR "Stopping pgcrond ($pid)..";
+
+		while (_get_daemon_pid()) {
+			if ($check_count > 25) {
+				die "pgcrond stop failed (timeout)!\n";
+			}
+
+			kill 2, $pid;
+
+			$check_count++;
+			print STDERR ".";
+			sleep(1);
+		}
+		print STDERR "stopped\n";
+		return 0;
+	} else {
+		print STDERR "pgcrond not started\n";
+		return 1;
+	}
+
+	return 0;
+}
+
+sub _get_daemon_pid {
+	if (-e PIDFILE && open(FH, PIDFILE)) {
+		my $pid = <FH>;
+		close(FH);
+		chomp($pid);
+
+		if (grep { $_->pid eq $pid } @{ Proc::ProcessTable->new()->table }) {
+			return $pid;
+		}
+
+		unlink(PIDFILE);
+	}
+
+	return;
+}
+
+sub _get_dsn {
+	my ($vars, $action) = @_;
+
+	# carry over any PG* vars set in crontab for job-specific fields set to "-"
+	$action->{'server'} = $vars->{'PGHOST'} if defined $vars->{'PGHOST'} && length($vars->{'PGHOST'}) > 0
+		&& $action->{'server'} eq '-';
+	$action->{'port'} = $vars->{'PGPORT'} if defined $vars->{'PGPORT'} && length($vars->{'PGPORT'}) > 0
+		&& $action->{'port'} eq '-';
+	$action->{'database'} = $vars->{'PGDATABASE'} if defined $vars->{'PGDATABASE'} && length($vars->{'PGDATABASE'}) > 0
+		&& $action->{'database'} eq '-';
+	$action->{'user'} = $vars->{'PGUSER'} if defined $vars->{'PGUSER'} && length($vars->{'PGUSER'}) > 0
+		&& $action->{'user'} eq '-';
+
+	return if $action->{'database'} eq '-' || $action->{'user'} eq '-';
+
+	my %dsn = (
+		database	=> $action->{'database'},
+		username	=> $action->{'user'}
+	);
+
+	if ($action->{'schema'} ne '-') {
+		my @schemas = grep { $_ =~ /\w+/ } split(',', $action->{'schema'});
+		if (substr($action->{'schema'}, -1, 1) eq ',' && scalar(grep { $_ =~ /^public$/oi } @schemas) < 1) {
+			push(@schemas, 'public');
+		}
+
+		$dsn{'schemas'} = \@schemas if scalar(@schemas) > 0;
+	}
+
+	$dsn{'server'} = $action->{'server'} eq '-' ? 'localhost' : $action->{'server'};
+	$dsn{'port'} = $action->{'port'} unless $action->{'port'} eq '-';
+
+	my $homedir = File::HomeDir->my_home() || _report($vars, \%dsn, $action, "Error locating pgcrond's home directory");
+
+	my $pgpass = $homedir . '/.pgpass';
+
+	open(FH, $pgpass) || _report($vars, \%dsn, $action, "Error opening PostgreSQL password file: $!");
+
+	PGPASS_LINE:
+	while (<FH>) {
+		chomp;
+		my @t = split(':', $_);
+
+		if (	($t[0] eq '*' || $t[0] eq $action->{'server'})
+			&&	($t[1] eq '*' || $t[1] eq $action->{'port'})
+			&&	($t[2] eq '*' || $t[2] eq $action->{'database'})
+			&&	($t[3] eq '*' || $t[3] eq $action->{'user'})) {
+			$dsn{'password'} = $t[4];
+			last PGPASS_LINE;
+		}
+	}
+
+	close(FH) || _report($vars, \%dsn, $action, "Error closing PostgreSQL password file: $!");
+
+	# update $vars hashref with DSN data (since shell jobs may depend on those being set properly)
+	if (defined $dsn{'server'}) {
+		$vars->{'PGHOST'} = $dsn{'server'};
+	} else {
+		delete $vars->{'PGHOST'} if defined $vars->{'PGHOST'};
+	}
+
+	if (defined $dsn{'port'}) {
+		$vars->{'PGPORT'} = $dsn{'port'};
+	} else {
+		delete $vars->{'PGPORT'} if defined $vars->{'PGPORT'};
+	}
+
+	if (defined $dsn{'database'}) {
+		$vars->{'PGDATABASE'} = $dsn{'database'};
+	} else {
+		delete $vars->{'PGDATABASE'} if defined $vars->{'PGDATABASE'};
+	}
+
+	if (defined $dsn{'username'}) {
+		$vars->{'PGUSER'} = $dsn{'username'};
+	} else {
+		delete $vars->{'PGUSER'} if defined $vars->{'PGUSER'};
+	}
+
+	return \%dsn;
+}
+
+sub _handle_action {
+	my ($vars, $action) = @_;
+
+	my ($pid);
+
+	chdir('/') or die "Couldn't chdir to /: $!";
+	open(STDIN, '/dev/null') or die "Couldn't redirect stdin from /dev/null: $!";
+	open(STDOUT, '>/dev/null') or die "Couldn't redirect stdout to /dev/null: $!";
+	defined ($pid = fork) or die "Couldn't fork: $!";
+	return if $pid; # parent process entering child-only codespace, so return
+	setsid or die "Couldn't start a new session: $!";
+	open(STDERR, '>&STDOUT') or die "Couldn't redirect stderr to stdout: $!";
+
+	$pid = $$;
+
+	$0 = PSTITLE . ': ' . $action->{'command'};
+
+	my $dsn = _get_dsn($vars, $action);
+
+	my ($output);
+
+	$output = _handle_direct($vars, $dsn, $action) if lc($action->{'type'}) eq 'direct';
+	$output = _handle_psql($vars, $dsn, $action) if lc($action->{'type'}) eq 'psql';
+	$output = _handle_perl($vars, $dsn, $action) if lc($action->{'type'}) eq 'perl';
+	$output = _handle_sh($vars, $dsn, $action) if lc($action->{'type'}) eq 'sh';
+
+	if (defined $output && length($output) > 0 && $output != 1) {
+		_report($vars, $dsn, $action, $output);
+	}
+
+	exit 0;
+}
+
+sub _handle_direct {
+	my ($vars, $dsn, $action) = @_;
+
+	my $config = {
+		default_reader => 'none',
+		primary => {
+			driver	=> 'Pg',
+			db		=> $dsn->{'database'},
+			user	=> $dsn->{'username'},
+			pass	=> $dsn->{'password'},
+		}
+	};
+	$config->{'primary'}->{'host'} = $dsn->{'server'} if defined $dsn->{'server'};
+	$config->{'primary'}->{'port'} = $dsn->{'port'} if defined $dsn->{'port'};
+	$config->{'primary'}->{'schemas'} = $dsn->{'schemas'} if defined $dsn->{'schemas'};
+
+	my $db = SQL::Wrapper->new({ config => $config }) || _report($vars, $dsn, $action, "Error connecting to database");
+
+	$db->begin;
+
+	my $res = $db->do($action->{'command'});
+
+	my ($output);
+
+	if ($res) {
+		$db->commit;
+		# this will be beefed up to actually take results of SELECT operations,
+		# prettify them and mail back to the MAILTO
+	} else {
+		$db->rollback;
+		_report($vars, $dsn, $action, "Error performing SQL operation: " . $res->error);
+	}
+
+	return $output;
+}
+
+sub _handle_perl {
+	my ($vars, $dsn, $action) = @_;
+
+	my $filename = substr($action->{'command'}, 0, 1) eq '/'
+		? $action->{'command'}
+		: $vars->{'SCRIPTHOME'} . $action->{'command'};
+	
+	unless (-r $filename) {
+		_report($vars, $dsn, $action, "Invalid Perl script file provided");
+	}
+
+	my $config = {
+		default_reader => 'none',
+		primary => {
+			driver	=> 'Pg',
+			db		=> $dsn->{'database'},
+			user	=> $dsn->{'username'},
+			pass	=> $dsn->{'password'},
+		}
+	};
+	$config->{'primary'}->{'host'} = $dsn->{'server'} if defined $dsn->{'server'};
+	$config->{'primary'}->{'port'} = $dsn->{'port'} if defined $dsn->{'port'};
+	$config->{'primary'}->{'schemas'} = $dsn->{'schemas'} if defined $dsn->{'schemas'};
+
+	my $db = SQL::Wrapper->new({ config => $config }) || _report($vars, $dsn, $action, "Error connecting to database");
+
+	my ($output);
+
+	eval {
+		require $filename;
+		$output = run($vars, $dsn, $action, $db);
+	};
+	
+	_report($vars, $dsn, $action, "Error executing Perl script: $@") if $@;
+
+	return $output;
+}
+
+sub _handle_psql {
+	my ($vars, $dsn, $action) = @_;
+
+	# possibly beef this up to use a temp copy of the psql session script to
+	# pass through schemas (as of right now, pgcrontab settings for schemas
+	# on psql jobs are effectively ignored -- not ideal)
+
+	my $filename = substr($action->{'command'}, 0, 1) eq '/'
+		? $action->{'command'}
+		: $vars->{'SCRIPTHOME'} . $action->{'command'};
+	
+	unless (-r $filename) {
+		_report($vars, $dsn, $action, "Invalid PostgreSQL session file provided");
+	}
+
+	my $dsn_args = "-U $dsn->{'username'} -d $dsn->{'database'}";
+	$dsn_args .= " -h $dsn->{'server'}" if defined $dsn->{'server'};
+	$dsn_args .= " -p $dsn->{'port'}" if defined $dsn->{'port'};
+
+	my ($output);
+
+	open(PSQL, "$vars->{'PSQL'} $dsn_args < $filename 2>&1|")
+		|| _report($vars, $dsn, $action, "Error opening pipe to psql program: $!");
+
+	while (<PSQL>) {
+		$output .= $_;
+	}
+
+	close(PSQL);
+
+	# this is ugly and non-configurable, but i hate all the cron emails we currently get because
+	# of various materialized view jobs that run every couple minutes
+	return $output if $output =~ /(WARNING|ERROR)/os; # send output back if there were warnings or errors
+	return $output if $output =~ /Time:\s+\d{5,}\.\d+\s+ms/os; # \timing was on and any single query ran 10+ seconds
+	return; # otherwise don't send output back, thus triggering no emails
+}
+
+sub _handle_sh {
+	my ($vars, $dsn, $action) = @_;
+
+	my $env = join(' ', map { qq{$_="$vars->{$_}"} if exists $vars->{$_} } qw( PGHOST PGPORT PGDATABASE PGUSER ));
+
+	my ($output);
+
+	local $SIG{PIPE} = 'IGNORE';
+
+	open(SHELL, "$env $action->{'command'} 2>&1 |")
+		|| _report($vars, $dsn, $action, "Error opening shell pipe: $!");
+
+	while (<SHELL>) {
+		$output .= $_;
+	}
+
+	close(SHELL);
+
+	return $output;
+}
+
+sub _report {
+	my ($vars, $dsn, $action, $msg) = @_;
+
+	my $pid = $$;
+	my $now = localtime;
+
+	# by default add a section at the top of the notifications summarizing the DSN info
+	unless (defined $vars->{'DSN_IN_MAIL'}
+		&& ($vars->{'DSN_IN_MAIL'} == 0 || $vars->{'DSN_IN_MAIL'} =~ /^(off|no)$/io)) {
+		my $dsn_info = '-' x 11 . '[Database]' . '-' x 11 . "\n";
+
+		$dsn_info .= "    Server: $dsn->{'server'}\n" if defined $dsn->{'server'};
+		$dsn_info .= "      Port: $dsn->{'port'}\n" if defined $dsn->{'port'};
+		$dsn_info .= "  Database: $dsn->{'database'}\n";
+		$dsn_info .= "      User: $dsn->{'username'}\n";
+		$dsn_info .= "   Schemas: " . join(', ', @{$dsn->{'schemas'}}) . "\n" if defined $dsn->{'schemas'};
+
+		$dsn_info .= '-' x 32 . "\n\n";
+
+		$msg = $dsn_info . $msg;
+	}
+
+	my $mail = MIME::Lite->new(
+		From	=> 'pgcrond daemon <root@localhost>',
+		To		=> $vars->{'MAILTO'},
+		Subject	=> "[pgcrond] $action->{'command'}",
+		Data	=> $msg,
+	);
+
+	$mail->send;
+
+	exit;
+}

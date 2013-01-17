@@ -1,0 +1,36 @@
+# /etc/pgcrontab: crontab definitions for use with pgcrond program
+#
+# pgcrond is a cron-like scheduler for PostgreSQL jobs.
+#
+# For full documentation on pgcrond and the options in this file,
+# refer to man pgcrond(8).
+MAILTO=root
+
+# JOB DEFINITIONS
+# In addition to the usual time and command fields used by other
+# crons, pgcrontab offers several PostgreSQL-specific fields. The
+# timespec fields works just like those of vixie-cron (refer to
+# the documentation for the Perl module DateTime::Cron::Simple
+# for details).
+#
+# server:      Hostname or IP address of the database server.
+# port:        Port on which the database server is running.
+# database:    The name of the database within the PostgreSQL cluster
+#              on the server to which the connection will be made.
+# user:        The username to use when connecting to the database.
+# schema:      Comma-separated list of schema names to set in the
+#              connection's search_path.
+# type:        pgcrond supports multiple methods of performing a
+#              job against the specified database. This field should
+#              specify one of: direct, psql, perl or sh.
+# commandspec: For types of direct or sh, this should contain the
+#              actual SQL statement or shell command (respectively)
+#              to run at the appointed time. For types of psql or
+#              perl, this should be the path (relative to SCRIPTHOME
+#              or fully-qualified) to a file which contains an
+#              entire SQL session (for type psql) or Perl code (for
+#              type perl). See the manpage for details on how to
+#              properly structure such Perl code to work correctly.
+#
+# Job definition field order:
+#min  hr  dom  mon  dow  server  port  database  user  schema  type  command
