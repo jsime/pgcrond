@@ -123,7 +123,7 @@ run properly.
 
 A I<perl> job allows you to specify a file containing Perl code to be
 loaded and executed.  Your Perl code will be provided with an already
-established connection to the database server, through a C<SQL::Wrapper>
+established connection to the database server, through a C<DBIx::DataStore>
 database object.  As with psql jobs, no transaction will be created
 for you -- you will need to start and stop your own transactions as
 necessary.
@@ -145,7 +145,7 @@ I<run> subroutine you provide with four arguments:
 
 =item $action (hashref) - the individual fields of the job definition
 
-=item $db (SQL::Wrapper object) - an active connection to the database
+=item $db (DBIx::DataStore object) - an active connection to the database
 
 =back
 
@@ -267,7 +267,7 @@ in a future release.
 
 =head1 SEE ALSO
 
-L<SQL::Wrapper>
+L<DBIx::DataStore>
 
 =head1 AUTHOR
 
@@ -285,14 +285,14 @@ it under the same terms as Perl itself.
 use strict;
 use warnings;
 
-our $VERSION = '0.9.1';
+our $VERSION = '0.9.2';
 
 use DateTime::Cron::Simple;
 use File::HomeDir;
 use MIME::Lite;
 use POSIX qw( setsid );
 use Proc::ProcessTable;
-use SQL::Wrapper;
+use DBIx::DataStore;
 
 use constant PIDFILE => '/var/run/pgcrond.pid';
 use constant PSTITLE => 'pgcrond';
@@ -672,7 +672,7 @@ sub _handle_direct {
 	$config->{'primary'}->{'port'} = $dsn->{'port'} if defined $dsn->{'port'};
 	$config->{'primary'}->{'schemas'} = $dsn->{'schemas'} if defined $dsn->{'schemas'};
 
-	my $db = SQL::Wrapper->new({ config => $config }) || _report($vars, $dsn, $action, "Error connecting to database");
+	my $db = DBIx::DataStore->new({ config => $config }) || _report($vars, $dsn, $action, "Error connecting to database");
 
 	$db->begin;
 
@@ -716,7 +716,7 @@ sub _handle_perl {
 	$config->{'primary'}->{'port'} = $dsn->{'port'} if defined $dsn->{'port'};
 	$config->{'primary'}->{'schemas'} = $dsn->{'schemas'} if defined $dsn->{'schemas'};
 
-	my $db = SQL::Wrapper->new({ config => $config }) || _report($vars, $dsn, $action, "Error connecting to database");
+	my $db = DBIx::DataStore->new({ config => $config }) || _report($vars, $dsn, $action, "Error connecting to database");
 
 	my ($output);
 
