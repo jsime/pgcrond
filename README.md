@@ -12,15 +12,6 @@ been used in production systems to positive effect. You're welcome to
 make use of it yourself, and if you find a serious bug or have any
 feature requests, I'll be happy to revisit the code.
 
-EVEN MORE IMPORTANT NOTICE
-
-This program uses a precursor to DBIx::DataStore called SQL::Wrapper.
-It is my intention to replace that dependency at some point, maybe
-in the near future. Until then, you may grab DataStore from my
-GitHub profile, and the swap is mostly one-to-one. I'll stop being
-lazy about it at some point and do it for you, though, if you can
-wait. No promises.
-
 INSTALLATION
 
 To install the program, run the included install script as root:
