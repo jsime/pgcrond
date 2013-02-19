@@ -1,311 +1,62 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
-=head1 NAME
+PGcrond->new->run;
 
-pgcrond - a PostgreSQL job scheduler daemon
+exit;
 
-=head1 SYNOPSIS
+package PGcrond;
 
-pgcrond (start|stop|status|...)
-
-=head1 DESCRIPTION
-
-As a job scheduler, pgcrond is very similar to programs such as cron, but
-simplifies the process of supplying credentials (and for certain types of
-jobs, establishing connections) for database access.  It should ideally
-be started by /etc/rc, or your system's equivalent init system.  As the
-arguments to pgcrond are identical to those of some of the more common
-init systems (particularly for various distributions of Linux), you may
-be able to simply link directly to the pgcrond executable from your init
-system's configuration.
-
-Once started, pgcrond daemonizes itself and returns immediately (no need
-to background the process with &).  It will wake up each minute, read
-its pgcrontab file and run any jobs whose timespec matches the current
-time.
-
-Unlike other job schedulers, which are designed to invoke only external
-commands, pgcrond adds the ability to specify a job as a direct SQL
-statement to be run against the specified database server, as a session
-file which can contain any number of valid statements to be run by the
-psql command line tool, as a Perl script which is automatically given a
-connection to the database, or as an external command.
-
-All job types are supplied their credentials for connecting to the
-database in the same way, making it easier to keep those details in one
-place, instead of scattered about in random scripts all over your system.
-
-Jobs are defined in a manner very similar to other cron programs, but
-because of the additional information required for database connections
-all pgcrond jobs are defined in their own file B</etc/pgcrontab>.
-
-=head2 Defining Jobs
-
-A full job definition is required to contain the following sets of
-details: a I<timespec>, appropriate and valid DSN values (server
-address, port, database name and username), a job type and a job
-command.  Optionally, a list of schemas may be provided as well.  These
-values can be provided explicitly for every job, or defaults may be
-established and only overridden for jobs that differ.
-
-All fields in the pgcrontab should be separated by an arbitrary amount
-of spaces or tabs, and each job definition must be contained to a
-single line (line-continuation escapes are not supported).
-
-=head3 Time specification fields
-
-The timespec covers the first five fields of the job definition:
-minute, hour, day of month, month and day of week (in that order).  For
-details on how wildcards, stepping values, etc. may be used in these
-fields, refer to B<crontab(5)>.
-
-=head3 Database Source Name fields
-
-The following four fields are used to specify the DSN, in the following
-order: server address, server port, database name and user name.  These
-fields may inherit the global default values you establish through
-setting various PG* variables in the pgcrontab by setting the value to
-a literal dash "-" character.
-
-=head3 Schema field
-
-This field is required to be present in the job definition, though an
-explicit value is not required.  A comma-separated list of schema
-names may be provided to override the server connection defaults.  As
-a shortcut, if you need to specify non-default schema names in addition
-to the "public" schema, you may omit the word I<public> in the list by
-leaving a trailing comma.  If you wish to use the connection default
-values for your connection's I<search_path>, use a single literal dash
-character.
-
-=head3 Job type field
-
-This field determines which type of job to run, with the following
-possible values:
-
-=over
-
-=item * direct
-
-Indicates the job to be run is a single SQL statement, directly
-executed against the database server by pgcrond without needing to
-invoke any external commands or processes.  You B<cannot> issue
-more than one SQL statement in this manner (for that, see the next
-job type I<psql>).
-
-If the statement was successful, no output or notifications are
-generated.  If there was an error running the statement, it is
-automatically rolled back by pgcrond and the text of the error message
-will be delivered to the address specified by the MAILTO variable.
-
-=item * psql
-
-This job type allows you to specify a text file containing any number
-of sequentially-executed SQL (and psql) statements.  A transaction is
-not started automatically for you by pgcrond for these jobs, as there
-may be cases where you want (or need) to run some commands outside of
-a transaction.  For this reason, it is very highly recommended that
-you issue a BEGIN and finish up with a COMMIT in your psql file unless
-there is a strong reason not to do so.
-
-Because the contents of your psql file are run through the actual
-psql command line utility, any commands valid within the context of
-that program are valid in your psql file.  This includes commands
-such as B<\d>, B<\set>, B<\timing> and so on.  For full details on
-the non-SQL commands supported by psql, refer to B<psql(1)>.
-
-Please note that if you have the PostgreSQL binaries installed outside
-root's default PATH, you must set the PSQL variable in your pgcrontab
-to point to the full path of the psql executable for psql jobs to
-run properly.
-
-=item * perl
-
-A I<perl> job allows you to specify a file containing Perl code to be
-loaded and executed.  Your Perl code will be provided with an already
-established connection to the database server, through a C<DBIx::DataStore>
-database object.  As with psql jobs, no transaction will be created
-for you -- you will need to start and stop your own transactions as
-necessary.
-
-Your Perl code needs to adhere to only a couple simple rules for it to
-work properly with pgcrond.  First, it must I<require> cleanly with
-both the I<strict> and I<warnings> pragmas enabled.  It also must
-provide at least one subroutine, named I<run> in the I<main::> namespace.
-
-When pgcrond runs your Perl code, it will connect to the database,
-require your code into the job process and then immediately call the
-I<run> subroutine you provide with four arguments:
-
-=over
-
-=item $vars (hashref) - all environment variables applicable to the job
-
-=item $dsn (hashref) - the individual fields composing the DSN
-
-=item $action (hashref) - the individual fields of the job definition
-
-=item $db (DBIx::DataStore object) - an active connection to the database
-
-=back
-
-It is permissible to use BEGIN blocks in your Perl code if necessary,
-though END blocks are strongly discouraged.  Note that the BEGIN block
-will be executed after connecting to the database (and will have no way
-to access that connection).
-
-If you wish your Perl jobs to provide any notifications to the address
-specified in MAILTO, return all such data in a single scalar value.
-Anything returned by the I<run> subroutine will be sent out.
-
-=item * sh
-
-The final job type is the simplest, used for executing external commands
-through a shell call.  You can specify any command here in the same
-manner as a standard cron job.  The only real difference in setting up
-a sh job in pgcrond is that it will create the applicable PG* environment
-variables, which can be used by well-behaved tools to make their own
-connections to the database (examples would be programs such as
-B<vacuumdb(1)>).
-
-=back
-
-=head2 Variables in pgcrontab
-
-Within your pgcrontab file, there are a number of useful variables which
-may be set.  All variables are set by entering them on a single line in
-the format of I<NAME>=I<value>.  Whitespace surrounding the equals sign
-is acceptable.  If the value needs to begin or end with whitespace
-characters, you must enclose the entire value for the variable in double
-quotes (which will not be present once the variables have been parsed
-from the pgcrontab file).
-
-The first set of variables which can be set are entirely optional, but
-can be used to establish defaults for the DSN fields.  This allows you
-to specify highly repetitive DSN values in each job as a single dash
-character, instead of writing out the entire value each time.  These
-variables are: PGHOST, PGPORT, PGDATABASE and PGUSER.  Note that these
-are the same variable names one would set in their environment to be
-used by standard PostgreSQL utilities.  Note also that PGPASSWORD was
-not in that list; its use in the pgcrontab is forbidden (to encourage
-keeping sensitive passwords out of the job definitions).
-
-There are two variables that may also be set to control notifications
-sent by pgcrond whenever a job produces any output. These are MAILTO,
-which is used to set the address to which the notification emails will
-be delivered, and DSN_IN_MAIL.  The latter is by default turned on and
-unless turned off (by setting the value to I<0>, I<off> or I<no>) will
-cause pgcrond to include the basic DSN information (sans password) in
-all mail notifications sent out.  This can be used if you have multiple
-jobs that run the same command against different databases or servers,
-and when error messages or other output produced by those jobs may not
-be enough to distinguish which exact job triggered the notification.
-
-The final variable which may be set is PSQL.  If the B<psql> binary is
-not in the default PATH of the root user, this variable must contain
-the full path to that executable (e.g. I</usr/local/pgsql/bin/psql>),
-otherwise all of your psql jobs will fail, as pgcrond will not be able
-to locate the psql program to run them.
-
-=head2 Setting passwords for pgcrond jobs
-
-To prevent having sensitive database account passwords littered all
-over your filesystem in various scripts, or to have them clearly listed
-right alongside all your jobs in the global /etc/pgcrontab file, pgcrond
-obtains all necessary passwords from your I<pgpass> file.
-
-This file has a very simple format, and is a standard feature of the
-PostgreSQL suite.  All well-behaved first and third party utilities for
-PostgreSQL know and understand this file, and so does pgcrond (whether
-you consider pgcrond well-behaved or not).
-
-The file consists of any number of lines, each line containing a
-single DSN+password combination in the form of:
-
-    host:port:database:user:password
-
-Where any of the non-password fields may be an asterisk, acting as the
-wildcard that will match anything.  When consulting this file to find
-an appropriate password, the standard procedure is to look at each
-line sequentially until a match is found against all four non-password
-fields, and pgcrond honors that procedure.  As soon as a match against
-all four fields is found, all lines beyond that are ignored, so the
-order of the lines in this file can be significant.
-
-The location of this file, by default, is at I<~user/.pgpass> for nearly
-all UN*X-like systems, which in the case of pgcrond should generally be
-I</root/.pgpass>.  Because of the obviously sensitive nature of the
-file's contents, permissions of 0600 are strongly recommended.
-
-=head1 FILES
-
-=over
-
-=item /usr/bin/pgcrond
-
-=item /etc/pgcrontab
-
-=item /var/run/pgcrond.pid
-
-=item /root/.pgpass
-
-=back
-
-=head1 BUGS and/or TODOs
-
-Schemas specified in the job definition are currently not passed through
-for psql jobs.
-
-While most of the modules and libraries used by pgcrond should be
-threadsafe, at least one is known not to be (L<DateTime::Cron::Simple>)
-as of this writing.  The use of threads, therefor, in Perl jobs is
-unfortunately not possible at this time and will trigger runtime errors.
-
-Running pgcrond as an unprivileged user (or at least less-privileged than
-root) is currently not supported, though it is planned to allow for this
-in a future release.
-
-=head1 SEE ALSO
-
-L<DBIx::DataStore>
-
-=head1 AUTHOR
-
-Jon Sime E<lt>jonsime@gmail.comE<gt>
-
-=head1 COPYRIGHT AND LICENSE
-
-Copyright 2007 by Jon Sime <jonsime@gmail.com>.
-
-This program is free software; you may redistribute it and/or modify
-it under the same terms as Perl itself.
-
-=cut
-
+use 5.010;
 use strict;
 use warnings;
 
-our $VERSION = '0.9.2';
+our $VERSION = '0.900001';
+$VERSION = eval $VERSION;
 
 use DateTime::Cron::Simple;
+use DBIx::DataStore;
 use File::HomeDir;
-use MIME::Lite;
 use POSIX qw( setsid );
 use Proc::ProcessTable;
-use DBIx::DataStore;
 
 use constant PIDFILE => '/var/run/pgcrond.pid';
 use constant PSTITLE => 'pgcrond';
 use constant DEF_SCRIPTHOME => '/etc/pgcrond/scripts';
 use constant PSQL_BINARY => '/usr/bin/psql';
 
-# set mail delivery to use SMTP to times (TODO: make this generic)
-MIME::Lite->send('smtp','localhost');
+sub new {
+    my ($class) = @_;
 
-if (!defined $ARGV[0] || scalar(@ARGV) != 1 || $ARGV[0] =~ /^-{0,2}help$/oi) {
-	print <<EOU;
+    my $self = bless {}, $class;
+    return $self;
+}
+
+sub run {
+    my ($self) = @_;
+
+    exit $self->usage if scalar(@ARGV) != 1 || $ARGV[0] =~ /^-{0,2}help$/oi;
+
+    my $command = lc($ARGV[0]);
+    $command =~ s/^\-+//og;
+
+    exit daemon_print_status() if $command eq 'status';
+    exit print "pgcrond $VERSION\n" if $command eq 'version';
+
+    if ($command eq 'stop' || $command eq 'restart') {
+        my $r = daemon_stop();
+        exit $r if $command eq 'stop';
+        exit $r if $command eq 'restart' && $r != 0;
+    }
+
+    exit daemon_start() if $command eq 'start' || $command eq 'restart';
+}
+
+sub usage {
+    my ($self) = @_;
+
+    print <<EOU;
 pgcrond v$VERSION
-  Copyright 2007 by Jon Sime.
+  Copyright 2013, Jon Sime.
   This program is free software; you may redistribute it and/or modify
   it under the same terms as Perl itself.
 
@@ -334,30 +85,8 @@ Commands:
 
 EOU
 
-	exit 0;
+    return 0;
 }
-
-$ARGV[0] = lc($ARGV[0]);
-$ARGV[0] =~ s/^\-+//og;
-
-if ($ARGV[0] eq 'status') {
-	exit daemon_print_status();
-}
-
-if ($ARGV[0] eq 'version') {
-	exit print "pgcrond $VERSION\n";
-}
-
-if ($ARGV[0] eq 'stop' || $ARGV[0] eq 'restart') {
-	my $r = daemon_stop();
-	exit $r if $ARGV[0] eq 'stop';
-	exit $r if $ARGV[0] eq 'restart' && $r != 0;
-}
-
-if ($ARGV[0] eq 'start' || $ARGV[0] eq 'restart') {
-	exit daemon_start();
-}
-
 
 sub check_pgcrontab {
 	my %vars = ();
@@ -770,7 +499,7 @@ sub _handle_psql {
 sub _handle_sh {
 	my ($vars, $dsn, $action) = @_;
 
-	my $env = join(' ', map { qq{$_="$vars->{$_}"} if exists $vars->{$_} } qw( PGHOST PGPORT PGDATABASE PGUSER ));
+	my $env = join(' ', map { qq|$_="$vars->{$_}"| if exists $vars->{$_} } qw( PGHOST PGPORT PGDATABASE PGUSER ));
 
 	my ($output);
 
