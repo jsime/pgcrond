@@ -1,18 +1,84 @@
 #!/usr/bin/env perl
 
+use 5.010;
+
 PGcrond->new->run;
 
 exit;
 
 package PGcrond;
 
-use 5.010;
 use strict;
 use warnings;
 
 our $VERSION = '0.900001';
 $VERSION = eval $VERSION;
 
+sub new {
+    my ($class) = @_;
+
+    my $self = bless {}, $class;
+
+    return $self;
+}
+
+sub run {
+    my ($self) = @_;
+}
+
+
+package PGcrond::Crontab;
+
+use strict;
+use warnings;
+
+sub new {
+    my ($class) = @_;
+
+    my $self = bless {}, $class;
+
+    $self->reload;
+
+    return $self;
+}
+
+sub reload {
+    my ($self) = @_;
+
+    # Locate all pgcrontabs (main and pgcrontab.d/* files)
+
+    # Re-read/parse any that are either new or have an mtime greater than last reload() (or maybe a filehash?)
+}
+
+
+package PGcrond::Handler;
+
+use strict;
+use warnings;
+
+sub run {
+    my ($class, %opts) = @_;
+
+    # fork and run command
+
+    # deliver report (root@localhost if no MAILTO provided)
+}
+
+sub perl {
+}
+
+sub psql {
+}
+
+sub shell {
+}
+
+sub sql {
+}
+
+
+1;
+__DATA__
 use DateTime::Cron::Simple;
 use DBIx::DataStore;
 use File::HomeDir;
